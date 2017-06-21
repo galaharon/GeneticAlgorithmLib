@@ -1,244 +1,170 @@
 package com.genetic.base;
 
-import static com.genetic.util.LambdaUtil.uncheckedF;
-import static com.genetic.util.LambdaUtil.uncheckedS;
-import static java.util.function.Function.identity;
+import static com.genetic.util.LambdaUtil.*;
+import static com.google.common.base.Predicates.not;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.util.*;
-import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.function.ToDoubleFunction;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import javax.annotation.Nonnull;
 
 import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableList;
 
 public class Population<T extends Creature>
 {
-	private final Function<Map<T, Double>, Collection<T>> progressionStrategy;
-	private final Function<T, Double> fitnessFunction;
-	private DoubleSummaryStatistics statistics;
-	private int generation = 1;
+	private long generation;
 
-	private final Map<T, Double> population;
+	private final List<T> creatures;
+	private final Map<T, Double> fitnessMap;
 
-	private Population(List<T> initialPopulation,
-			Function<Map<T, Double>, Collection<T>> progressionStrategy,
-			Function<T, Double> fitnessFunction)
+	private final ProgressionStrategy<T> progressionStrategy;
+	private final ToDoubleFunction<T> fitnessFunction;
+
+	private boolean statsUpToDate = false;
+	private DoubleSummaryStatistics stats;
+
+	private Population(List<T> initialPopulation, ProgressionStrategy<T> progressionStrategy,
+			ToDoubleFunction<T> fitnessFunction)
 	{
+		this.creatures = initialPopulation;
 		this.progressionStrategy = progressionStrategy;
+		this.fitnessMap = new WeakHashMap<>(creatures.size());
 		this.fitnessFunction = fitnessFunction;
-		this.population = initialPopulation.stream()
-				.collect(Collectors.toMap(identity(), fitnessFunction));
-		updateStatistics();
+		refreshFitness();
+		this.generation = 1;
 	}
 
-	/**
-	 * Updates the statistics.
-	 */
-	private void updateStatistics()
+	private void refreshFitness()
 	{
-		statistics = population.values().stream()
-				.collect(Collectors.summarizingDouble(Double::doubleValue));
+		creatures.stream().filter(not(fitnessMap::containsKey))
+				.forEach(c -> fitnessMap.put(c, fitnessFunction.applyAsDouble(c)));
+		sortCreatures();
 	}
 
-	/**
-	 * Returns a summary of the current statistics.
-	 * 
-	 * @return
-	 */
-	public DoubleSummaryStatistics getStatistics()
+	public void progress()
 	{
-		return statistics;
+		generation++;
+		statsUpToDate = false;
+		progressionStrategy.progress(creatures, fitnessMap);
+		refreshFitness();
 	}
 
-	/**
-	 * Returns the current generation count
-	 * 
-	 * @return
-	 */
-	public int generation()
+	public DoubleSummaryStatistics statistics()
+	{
+		if(!statsUpToDate) // lazy loading
+		{
+			stats = creatures.stream().mapToDouble(fitnessMap::get).summaryStatistics();
+			statsUpToDate = true;
+		}
+		return stats;
+	}
+
+	private void sortCreatures()
+	{
+		Collections.sort(creatures, (a, b) -> fitnessMap.get(b).compareTo(fitnessMap.get(a)));
+	}
+
+	public ImmutableList<T> creatures()
+	{
+		return ImmutableList.copyOf(creatures);
+	}
+
+	public long generation()
 	{
 		return generation;
 	}
 
-	/**
-	 * Progresses a generation.
-	 */
-	public void progress()
+	public double fitnessOf(T creature)
 	{
-		progress(true);
+		return this.fitnessMap.get(creature);
 	}
 
-	private void progress(boolean updateStatistics)
-	{
-		generation++;
-		Collection<T> children = progressionStrategy.apply(population);
-		children.stream().forEach(child -> population.put(child, fitnessFunction.apply(child)));
-		if(updateStatistics) updateStatistics();
-	}
-
-	/**
-	 * Progresses until the given generation is reached.
-	 * 
-	 * @param maxGenerations
-	 * @param updateStats
-	 */
-	public void progressUntilGeneration(int maxGenerations, boolean updateStats)
-	{
-		while(generation < maxGenerations)
-		{
-			progress(updateStats);
-		}
-		if(!updateStats) updateStatistics();
-	}
-
-	/**
-	 * Returns an immutable view of the creature-fitness map.
-	 * 
-	 * @return
-	 */
-	public Map<T, Double> getCreatures()
-	{
-		return ImmutableMap.copyOf(population);
-	}
-
-	/**
-	 * Same as {@code new Population.Builder<>()}.
-	 * 
-	 * @return a new builder.
-	 */
-	public static <T extends Creature> Builder<T> builder()
-	{
-		return new Builder<>();
-	}
-
-	@SuppressWarnings("unchecked")
 	public static <T extends Creature> Population<T> fromClass(Class<T> clazz,
-			int initialPopulation)
+			long initialPopulation)
 	{
-		Builder<T> builder = builder();
-		builder.setInitialPopulationSize(initialPopulation);
+		Builder<T> builder = new Builder<>();
+		builder.withInitialSize(initialPopulation);
 
 		try
 		{
 			Constructor<T> con = clazz.getConstructor();
-			builder.setGenerator(uncheckedS(con::newInstance));
+			builder.generator(uncheckedS(con::newInstance));
 		}
 		catch(Exception e)
 		{
 			throw new RuntimeException("Empty constructor must be present in class.", e);
 		}
 
-		
 		for(Method method : clazz.getDeclaredMethods())
 		{
 			if(method.isAnnotationPresent(Creature.FitnessFunction.class))
 			{
-				builder.setFitnessFunction(uncheckedF(c -> (Double) method.invoke(null, c)));
+				builder.fitnessFunction(uncheckedFD(c -> (Double) method.invoke(null, c)));
 			}
 			else if(method.isAnnotationPresent(Creature.ProgressionFunction.class))
 			{
-				builder.setProgressionStrategy(uncheckedF(p -> (Collection<T>) method.invoke(null, p)));
+				builder.progressionStrategy(uncheckedPS((p, f) -> method.invoke(null, p, f)));
 			}
 		}
-		
-
 		return builder.build();
 	}
 
 	public static class Builder<T extends Creature>
 	{
 		private Supplier<T> generator;
-		private Function<Map<T, Double>, Collection<T>> progressionStrategy;
-		private int populationSize = 1000;
-		private Function<T, Double> fitnessFunction;
+		private long size = 1000;
+		private ProgressionStrategy<T> strategy;
+		private ToDoubleFunction<T> fitnessFunction;
 
-		public Builder()
+		public Builder<T> generator(@Nonnull Supplier<T> generator)
 		{
-			// empty
-		}
-
-		public Builder<T> setGenerator(@Nonnull Supplier<T> creatureGenerator)
-		{
-			this.generator = creatureGenerator;
+			this.generator = generator;
 			return this;
 		}
 
-		/**
-		 * Sets the progression strategy. This function recieves the current map
-		 * of the population in the form creature -> fitness. It may remove as
-		 * many entries as it wants, and must return a collection of new
-		 * children.
-		 * 
-		 * @param progressionStrategy
-		 * @return this
-		 */
-		public Builder<T> setProgressionStrategy(
-				@Nonnull Function<Map<T, Double>, Collection<T>> progressionStrategy)
+		public Builder<T> progressionStrategy(@Nonnull ProgressionStrategy<T> strategy)
 		{
-			this.progressionStrategy = progressionStrategy;
+			this.strategy = strategy;
 			return this;
 		}
 
-		/**
-		 * Sets the initial size of the population. By default this is equal to
-		 * 1000.
-		 * 
-		 * @param size
-		 * @return this
-		 */
-		public Builder<T> setInitialPopulationSize(int size)
-		{
-			this.populationSize = size;
-			return this;
-		}
-
-		/**
-		 * A function that grades the fitness of a creature. It is up to you in
-		 * terms of how you implement fitness. Most methods in
-		 * {@link ProgressionStrategies} relies on lower fitness meaning less
-		 * fit.
-		 * 
-		 * @param fitnessFunction
-		 * @return
-		 */
-		public Builder<T> setFitnessFunction(Function<T, Double> fitnessFunction)
+		public Builder<T> fitnessFunction(@Nonnull ToDoubleFunction<T> fitnessFunction)
 		{
 			this.fitnessFunction = fitnessFunction;
 			return this;
 		}
 
 		/**
-		 * Builds the initial population.
+		 * By default, this is set to 1000.
 		 * 
-		 * @return a list containing the initial population.
+		 * @param size
+		 * @return
 		 */
-		private List<T> buildInitialPopulation()
+		public Builder<T> withInitialSize(long size)
 		{
-			return Stream.generate(generator).limit(populationSize).collect(Collectors.toList());
+			Preconditions.checkArgument(size > 0, "Initial population size must be positive.");
+			this.size = size;
+			return this;
 		}
 
-		/**
-		 * Builds the population object
-		 * 
-		 * @return the population representation
-		 */
 		public Population<T> build()
 		{
-			Preconditions.checkNotNull(generator, "Creature generator cannot be null.");
-			Preconditions.checkNotNull(progressionStrategy, "Progression strategy cannot be null.");
-			Preconditions.checkNotNull(fitnessFunction, "Fitness function cannot be null.");
-			Preconditions.checkArgument(populationSize > 1, "Population size %d must be > 1",
-					populationSize);
-
-			Population<T> population = new Population<>(buildInitialPopulation(),
-					progressionStrategy, fitnessFunction);
+			Preconditions.checkNotNull(strategy, "Progression strategy was not set.");
+			Population<T> population = new Population<>(buildInitialPopulation(), strategy,
+					fitnessFunction);
 			return population;
+		}
+
+		private List<T> buildInitialPopulation()
+		{
+			Preconditions.checkNotNull(generator, "Generator was not set.");
+			return Stream.generate(generator).limit(size).collect(Collectors.toList());
 		}
 	}
 }

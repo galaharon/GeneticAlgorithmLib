@@ -1,7 +1,6 @@
 package com.genetic.test;
 
 import java.util.*;
-import java.util.Map.Entry;
 
 import com.genetic.base.*;
 
@@ -10,22 +9,23 @@ public class Main
 
 	public static void main(String[] args)
 	{
-		Population<LinearAlgorithm> population = Population.<LinearAlgorithm>builder()
-				.setFitnessFunction(LinearAlgorithm::fitness).setInitialPopulationSize(10000)
-				.setGenerator(LinearAlgorithm::new)
-				.setProgressionStrategy(ProgressionStrategies.killWorstHalf(LinearAlgorithm::breed))
+		Population<LinearAlgorithm> population = new Population.Builder<LinearAlgorithm>()
+				.fitnessFunction(LinearAlgorithm::fitness).withInitialSize(10000)
+				.generator(LinearAlgorithm::new).progressionStrategy(ProgressionStrategies
+						.killWorstHalf(LinearAlgorithm::breed, new Random(0)).reverse())
 				.build();
 
-		for(int i = 0; i < 100; i++)
+		for(int i = 0; i < 1000; i++)
 		{
 			System.out.println(String.format("Generation %d - Average %f, max %f",
-					population.generation(), population.getStatistics().getAverage(),
-					population.getStatistics().getMax()));
-			if(population.getStatistics().getMax() >= -0.0001D)
+					population.generation(), population.statistics().getAverage(),
+					population.statistics().getMax()));
+			if(population.statistics().getMax() <= 0.00001D)
 			{
-				for(Entry<?, Double> e : population.getCreatures().entrySet())
+				for(LinearAlgorithm l : population.creatures())
 				{
-					if(e.getValue().doubleValue() > -0.01) System.out.println(e);
+					if(population.fitnessOf(l) < 0.01)
+						System.out.println(l + ", " + population.fitnessOf(l));
 				}
 				break;
 			}
@@ -82,14 +82,15 @@ public class Main
 				double d = a.getResult(i) - actual(i);
 				aggregate += d * d;
 			}
-			return -aggregate;
+			return aggregate;
 		}
 
 		@ProgressionFunction
-		public static Collection<LinearAlgorithm> progression(
-				Map<LinearAlgorithm, Double> population)
+		public static void progression(List<LinearAlgorithm> population,
+				Map<LinearAlgorithm, Double> map)
 		{
-			return ProgressionStrategies.killWorstHalf(LinearAlgorithm::breed).apply(population);
+			ProgressionStrategies.killWorstHalf(LinearAlgorithm::breed).reverse()
+					.progress(population, map);
 		}
 
 	}

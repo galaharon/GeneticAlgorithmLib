@@ -6,10 +6,13 @@ public interface Creature
 {
 	@Retention(RetentionPolicy.RUNTIME)
 	@Target({ ElementType.METHOD })
-	public static @interface FitnessFunction {}
-	
+	public static @interface FitnessFunction
+	{
+	}
+
 	@Retention(RetentionPolicy.RUNTIME)
 	@Target({ ElementType.METHOD })
-	public static @interface ProgressionFunction {}
-	
+	public static @interface ProgressionFunction
+	{
+	}
 }
